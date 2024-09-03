@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useContext,
 } from "react";
+import Joyride, { CallBackProps, Placement, STATUS, Step } from "react-joyride";
 import ReactFlow, {
   Controls,
   Background,
@@ -37,6 +38,7 @@ import {
   IconFileSymlink,
   IconRobot,
   IconRuler2,
+  IconScan,
   IconArrowMerge,
   IconArrowsSplit,
   IconForms,
@@ -66,6 +68,7 @@ import ExampleFlowsModal, { ExampleFlowsModalRef } from "./ExampleFlowsModal";
 import AreYouSureModal, { AreYouSureModalRef } from "./AreYouSureModal";
 import LLMEvaluatorNode from "./LLMEvalNode";
 import SimpleEvalNode from "./SimpleEvalNode";
+import RagEvalNode from "./RagEvalNode";
 import {
   getDefaultModelFormData,
   getDefaultModelSettings,
@@ -109,8 +112,17 @@ import {
   isChromium,
 } from "react-device-detect";
 import MultiEvalNode from "./MultiEvalNode";
-import { BinIcon, Chevron, CopyIcon, LockIcon, TickMark } from "./SvgIcons";
+import {
+  BinIcon,
+  Chevron,
+  CloseIcon,
+  CopyIcon,
+  LightBulb,
+  LockIcon,
+  TickMark,
+} from "./SvgIcons";
 import "./CssStyles.css";
+import { HintRunsType, incrementHintRun, setHintSteps } from "./HintHelpers";
 const IS_ACCEPTED_BROWSER =
   (isChrome ||
     isChromium ||
@@ -135,6 +147,8 @@ const selector = (state: StoreHandles) => ({
   resetLLMColors: state.resetLLMColors,
   setAPIKeys: state.setAPIKeys,
   importState: state.importState,
+  triggerHint: state.triggerHint,
+  setTriggerHint: state.setTriggerHint,
 });
 
 // The initial LLM to use when new flows are created, or upon first load
@@ -178,6 +192,7 @@ const nodeTypes = {
   prompt: PromptNode,
   chat: PromptNode,
   simpleval: SimpleEvalNode,
+  rageval: RagEvalNode,
   evaluator: CodeEvaluatorNode,
   llmeval: LLMEvaluatorNode,
   multieval: MultiEvalNode,
@@ -255,6 +270,8 @@ const App = () => {
     resetLLMColors,
     setAPIKeys,
     importState,
+    triggerHint,
+    setTriggerHint,
   } = useStore(selector, shallow);
 
   const { showNotification } = useNotification();
@@ -306,6 +323,30 @@ const App = () => {
     for: "",
   });
   const [warning, setWarning] = useState({ warning: "", open: false });
+
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [currentStep, setCurrentStep] = useState<number>(0);
+  const [runTour, setRunTour] = useState(true);
+  const [hintRuns, setHintRuns] = useState<HintRunsType>({
+    promptNode: 0,
+    textFieldsNode: 0,
+    uploadFileFieldsNode: 0,
+    usecase: 0,
+    iteration: 0,
+    prompthitplay: 0,
+    model_added: 0,
+    csvNode: 0,
+    table: 0,
+    chatTurn: 0,
+    simpleEval: 0,
+    evalNode: 0,
+    llmeval: 0,
+    visNode: 0,
+    file_upload: 0,
+    textfields2: 0,
+    textfields3: 0,
+  });
+  const [idForHint, setIdForHint] = useState<string>("");
   const API_URL = process.env.REACT_APP_API_URL;
   const [hoveredItem, setHoveredItem] = useState(null);
   const [editUsecaseforCopy, setEditUsecaseforCopy] = useState("");
@@ -375,8 +416,9 @@ const App = () => {
     offsetY?: number,
   ) => {
     const { x, y } = getViewportCenter();
+    const idForNode = `${id}-` + Date.now();
     addNodeToStore({
-      id: `${id}-` + Date.now(),
+      id: idForNode,
       type: type ?? id,
       data: data ?? {},
       position: {
@@ -384,7 +426,17 @@ const App = () => {
         y: y - 100 + (offsetY || 0),
       },
     });
-    setIsChangesNotSaved(true);
+
+    // if user adds node without closing previous hint
+    setRunTour(false);
+    // setting id to triggere respective HINT
+    if (id) {
+      setTriggerHint(id);
+      incrementHintRun(id, setHintRuns);
+      setIdForHint(idForNode);
+    }
+    updateIsChangesNotSaved(true);
+
     // following changes are for showing warning if we delete iter or usecase and again if we try to add nodes and save flow
     const data1: any = localStorage.getItem("current_usecase");
     const localData = JSON.parse(data1);
@@ -410,6 +462,7 @@ const App = () => {
   const addPromptNode = () => addNode("promptNode", "prompt", { prompt: "" });
   const addChatTurnNode = () => addNode("chatTurn", "chat", { prompt: "" });
   const addSimpleEvalNode = () => addNode("simpleEval", "simpleval");
+  const addRagEvalNode = () => addNode("ragEval", "rageval");
   const addEvalNode = (progLang: string) => {
     let code = "";
     if (progLang === "python")
@@ -636,6 +689,7 @@ const App = () => {
   ) => {
     setLoading(true);
     setOpenMenu(false);
+    setTriggerHint("");
     const iterationCreation = forIterationCreation ?? false;
     if (menuData && menuData.length === 0) {
       setLoading(false);
@@ -651,7 +705,7 @@ const App = () => {
         iterationCreated: false,
       }),
     );
-    setIsChangesNotSaved(false);
+    updateIsChangesNotSaved(false);
     if (!rfInstance) return;
 
     // We first get the data of the flow
@@ -753,10 +807,6 @@ const App = () => {
         .catch((error) => {
           setLoading(false);
           console.error("Error saving flow:", error);
-          // setNotificationText({
-          //   title: "Failed",
-          //   text: "File not saved, please select one of the usecase(path)",
-          // });
         });
     });
   };
@@ -767,6 +817,7 @@ const App = () => {
   ) => {
     try {
       setOpenMenu(false);
+      setTriggerHint("");
       if (isChangesNotSaved) {
         if (
           activeUseCase.usecase === ItemLabel &&
@@ -1339,7 +1390,9 @@ const App = () => {
         showNotification("Created!", "Use case has been successfully created");
         // resetFlow();
         resetFlowToBlankCanvas();
-        setIsChangesNotSaved(true);
+        setTriggerHint("created-usecase");
+        incrementHintRun("usecase", setHintRuns);
+        updateIsChangesNotSaved(true);
       } else {
         setLoading(false);
         console.log("error in creating usecase");
@@ -1469,6 +1522,16 @@ const App = () => {
         open: false,
       });
 
+      // Set currentfileLocked to true to disable the "add node" functionality whenever a file is deleted
+      // If a new iteration is created but not saved, and we switch to another iteration,
+      // the previous iteration is deleted, so we don't need to set isCurrentFileLocked to true.
+      // In other cases, we can set it to true.
+      if (!parsedIterCreated) {
+        // after deleting iteration, we can set this to locked, to disable add node.
+        setIsCurrentFileLocked(true);
+      } else {
+        setIsCurrentFileLocked(false);
+      }
       localStorage.setItem(
         "iteration-created",
         JSON.stringify({
@@ -1486,8 +1549,8 @@ const App = () => {
       setOpenMenu(false);
       resetFlowToBlankCanvas();
       setWarning({ warning: "", open: true });
-      setIsCurrentFileLocked(false);
-      setIsChangesNotSaved(false);
+
+      updateIsChangesNotSaved(false);
     }
   };
 
@@ -1576,7 +1639,7 @@ const App = () => {
         setOpenCreateUseCase(false);
         setLoading(false);
         setIsCurrentFileLocked(false);
-        setIsChangesNotSaved(true);
+        updateIsChangesNotSaved(true);
         localStorage.setItem(
           "current_usecase",
           JSON.stringify({
@@ -1611,6 +1674,8 @@ const App = () => {
           }),
         );
         // handleSaveFlow(false);
+        setTriggerHint("created-iteration");
+        incrementHintRun("iteration", setHintRuns);
       }
     } catch (e) {
       console.log("error in creating iteration");
@@ -1692,7 +1757,8 @@ const App = () => {
       setOpenCreateUseCase(false);
       setLoading(false);
       setIsCurrentFileLocked(false);
-      // setIsChangesNotSaved(true);
+      // updateIsChangesNotSaved(true);
+
       localStorage.setItem(
         "current_usecase",
         JSON.stringify({
@@ -1768,7 +1834,7 @@ const App = () => {
       setOpenMenu(false);
       setWarning({ warning: "", open: true });
       setIsCurrentFileLocked(true);
-      setIsChangesNotSaved(false);
+      updateIsChangesNotSaved(false);
     }
   };
 
@@ -1945,6 +2011,88 @@ const App = () => {
     }
   };
 
+  const handleJoyrideCallback = useCallback((data: CallBackProps) => {
+    const { status, index } = data;
+
+    if (status === STATUS.FINISHED || status === STATUS.SKIPPED) {
+      setRunTour(false); // Stop tour if finished or skipped
+    } else if (status === STATUS.RUNNING) {
+      setCurrentStep(index); // Update current step if the tour is running
+    }
+  }, []);
+
+  const handleClose = () => {
+    setRunTour(false);
+    if (triggerHint === "promptNode") {
+      // setTimeout(() => {
+      //   setTriggerHint("textfields3");
+      // }, 1000);
+    } else if (triggerHint === "textFieldsNode") {
+      setTimeout(() => {
+        setTriggerHint("textfields2");
+      }, 500);
+    }
+  };
+
+  const setUpdateSteps = (
+    targetClass: string,
+    titleText: string,
+    content: any,
+    placement: string,
+    disableBoolean: boolean,
+    requireTimeout: boolean,
+  ) => {
+    const updatedSteps = [
+      ...steps,
+      {
+        target: targetClass,
+        title: titleText,
+        content: content,
+        placement: placement as Placement,
+        disableBeacon: disableBoolean,
+      },
+    ];
+    setSteps(updatedSteps);
+    setCurrentStep(updatedSteps.length - 1);
+    setRunTour(true);
+    if (requireTimeout) {
+      setTimeout(() => {
+        setCurrentStep(updatedSteps.length - 1);
+        setRunTour(true);
+      }, 100);
+    }
+    // setTriggerHint("");
+  };
+
+  const updateIsChangesNotSaved = useCallback(
+    (value: boolean) => {
+      setIsChangesNotSaved(value);
+      localStorage.setItem("isChangesNotSaved", JSON.stringify(value));
+    },
+    [isChangesNotSaved],
+  );
+
+  const hideWebpackOverlayError = (e: any, message: string) => {
+    if (e && e.message.startsWith(message)) {
+      const resizeObserverErrDiv = document.getElementById(
+        "webpack-dev-server-client-overlay-div",
+      );
+      const resizeObserverErr = document.getElementById(
+        "webpack-dev-server-client-overlay",
+      );
+      if (resizeObserverErr) {
+        resizeObserverErr.setAttribute("style", "display: none");
+      }
+      if (resizeObserverErrDiv) {
+        resizeObserverErrDiv.setAttribute("style", "display: none");
+      }
+    }
+  };
+
+  useEffect(() => {
+    setHintSteps(triggerHint, hintRuns, setUpdateSteps, setHintRuns, idForHint);
+  }, [triggerHint]);
+
   // this code is for routing to respective methods when user confirms in the save changes modal
   useEffect(() => {
     if (confirmed) {
@@ -1966,7 +2114,6 @@ const App = () => {
         const parsedData = data && JSON.parse(data);
         if (parsedData && parsedData.iterationCreated) {
           handleDeleteIteration(parsedData.usecase, parsedData.iteration);
-          console.log("triggered");
         } else {
           handleIterationFolderClick(
             modalOpen.usecase,
@@ -1977,7 +2124,6 @@ const App = () => {
       } else if (copyModalOpen.for === "copy-usecase") {
         handleCopyUsecase(copyModalOpen.usecase);
       }
-
       setConfirmed(false);
     }
   }, [confirmed]);
@@ -2063,6 +2209,10 @@ const App = () => {
           stack: event.reason.stack,
         };
         console.error("Unhandled promise rejection: ", errorData);
+        hideWebpackOverlayError(
+          errorData,
+          "Resize must be passed a displayed plot div element",
+        );
         showNotification("Failed", errorData.message, "red");
         // Prevent the default handling (e.g., logging to the console)
         event.preventDefault();
@@ -2079,26 +2229,31 @@ const App = () => {
 
   useEffect(() => {
     window.addEventListener("error", (e) => {
-      if (e.message.startsWith("ResizeObserver loop")) {
-        const resizeObserverErrDiv = document.getElementById(
-          "webpack-dev-server-client-overlay-div",
-        );
-        const resizeObserverErr = document.getElementById(
-          "webpack-dev-server-client-overlay",
-        );
-        if (resizeObserverErr) {
-          resizeObserverErr.setAttribute("style", "display: none");
-        }
-        if (resizeObserverErrDiv) {
-          resizeObserverErrDiv.setAttribute("style", "display: none");
-        }
-      }
+      hideWebpackOverlayError(e, "ResizeObserver loop");
     });
   }, []);
 
   useEffect(() => {
     fetchFoldersAndContents();
   }, [isUseCaseCreated]);
+
+  useEffect(() => {
+    const storedHintRuns = localStorage.getItem("hintRuns");
+    if (storedHintRuns) {
+      const parsed = JSON.parse(storedHintRuns);
+      setHintRuns(parsed);
+      if (parsed.usecase <= 2) {
+        setTriggerHint("created-usecase");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const changesNotSaveLocal = localStorage.getItem("isChangesNotSaved");
+    if (changesNotSaveLocal) {
+      setIsChangesNotSaved(JSON.parse(changesNotSaveLocal));
+    }
+  }, []);
 
   if (!IS_ACCEPTED_BROWSER) {
     return (
@@ -2270,7 +2425,7 @@ const App = () => {
             <Button
               disabled={false}
               onClick={() => {
-                setIsChangesNotSaved(false);
+                updateIsChangesNotSaved(false);
                 setConfirmed(true);
               }}
               loading={loading}
@@ -2400,11 +2555,52 @@ const App = () => {
             setOpenAddNode(false);
             setOpenMenu(false);
             setSaveAndCommitBtnOpen(false);
+            // setRunTour(false);
+            handleClose();
           }}
         >
           <div
             style={{ height: "100%", backgroundColor: "#eee", flexGrow: "1" }}
           >
+            {runTour && (
+              <Joyride
+                callback={handleJoyrideCallback}
+                continuous={true}
+                stepIndex={currentStep}
+                run={runTour}
+                steps={steps}
+                showSkipButton={true}
+                disableOverlay
+                showProgress
+                spotlightPadding={0}
+                styles={{
+                  tooltip: {
+                    borderRadius: "2px",
+                    padding: "20px",
+                    boxShadow: "0px 0px 10px rgba(0,0,0,0.1)",
+                    backgroundColor: "white",
+                    textAlign: "left",
+                  },
+                }}
+                tooltipComponent={({ step, tooltipProps }) => (
+                  <div {...tooltipProps} className="hint-container">
+                    <div className="hint-title-container">
+                      <div className="hint-title">
+                        <div className="light-bulb">
+                          <LightBulb />
+                        </div>
+                        <div>{step.title}</div>
+                      </div>
+                      <div className="hint-close-icon" onClick={handleClose}>
+                        <CloseIcon />
+                      </div>
+                    </div>
+
+                    <div className="hint-description">{step.content}</div>
+                  </div>
+                )}
+              />
+            )}
             <ReactFlow
               minZoom={0.7}
               onNodesChange={onNodesChange}
@@ -2487,8 +2683,10 @@ const App = () => {
                       setSaveAndCommitBtnOpen(false);
                       setOpenMenu(!openMenu);
                       setOpenAddNode(false);
+                      handleClose();
                     }}
                     variant="gradient"
+                    className="use-case"
                   >
                     Use Cases +
                   </Button>
@@ -2793,6 +2991,7 @@ const App = () => {
               >
                 <Menu.Target>
                   <Button
+                    className="add-node"
                     size="sm"
                     variant="gradient"
                     compact
@@ -2805,6 +3004,7 @@ const App = () => {
                       setOpenAddNode(!openAddNode);
                       setOpenMenu(false);
                       setSaveAndCommitBtnOpen(false);
+                      handleClose();
                     }} // to close use cases menu
                   >
                     Add Node +
@@ -2908,6 +3108,15 @@ const App = () => {
                       Multi-Evaluator{" "}
                     </Menu.Item>
                   </MenuTooltip>
+                  <MenuTooltip label="Evaluate responses with rag (no coding required).">
+                    <Menu.Item
+                      onClick={addRagEvalNode}
+                      icon={<IconScan size="16px" />}
+                    >
+                      {" "}
+                      Rag Evaluator{" "}
+                    </Menu.Item>
+                  </MenuTooltip>
                   <Menu.Divider />
                   <Menu.Label>Visualizers</Menu.Label>
                   <MenuTooltip label="Plot evaluation results. (Attach an evaluator or scorer node as input.)">
@@ -2990,6 +3199,7 @@ const App = () => {
 
               <Button
                 loading={loading}
+                loaderPosition="right"
                 disabled={handleDisableSave()}
                 // disabled={isCurrenFileLocked}
                 size="sm"
@@ -3137,6 +3347,7 @@ const App = () => {
                 </Button>
               )}
               <Button
+                className="export-btn"
                 onClick={exportFlow}
                 size="sm"
                 variant="outline"
@@ -3184,6 +3395,7 @@ const App = () => {
                 size="sm"
                 variant="gradient"
                 compact
+                className="settings-class"
               >
                 <IconSettings size={"90%"} />
               </Button>
